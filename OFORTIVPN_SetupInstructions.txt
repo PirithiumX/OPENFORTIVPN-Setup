@@ -36,5 +36,7 @@ sudo openfortivpn -u <USER> -p <PASSWORD> --trusted-cert <CERTIFICATE><SERVER>:<
 MORE INFO: github.com/adrienverge/openfortivpn
 !* manikier.com/1/openfortivpn  *! Good switch information
 ------------------------------------------------------------------------------------------------------
-
+to Disconnect:
+ctrl+c   Note: the connection takes over the terminal while active. 
+Looking into making this a service. PX>1-26-2021 
 

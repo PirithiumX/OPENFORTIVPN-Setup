@@ -1,0 +1,390 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <iostream>  //user for Cpp output. cout etc.
+#include <cstdio>
+#include <time.h>
+#include <fstream> // For File Read Writing
+//Include Files for libplctag
+//See important-compile-instructions.txt for Info on Getting libplgtag installed
+//Project info here at github https://github.com/libplctag/libplctag
+#include "libplctag.h" //I manually add to Directory where source is located.
+#include "utils.h"   //I manually add to Directory where source is located.
+//---------------------------------------------------------------------------------------------------------------------------------------------
+//Debian systems install 'build-essential' - To build the program 
+//libgtk2.0-dev == Use IF Graphical 
+//Include Files for Mysql
+//libmysqlclient-dev <- to Use the mysql.h
+#include <mysql.h>
+#include <float.h>
+/*
+SMS TEXT MESSAGING !!!!!!
+
+install --> apt-get update && apt-get install postfix mailutils
+When prompted for "General type of mail configuration," choose "! Internet Site  !".
+
+When prompted for a "Mail name," choose a hostname to be used in mail headers as the origin of your emails. A fully-qualified domain name is preferred, but using your machine's simple hostname is OK. Regardless of what you enter here, your return address will appear to recipients as your Gmail address.
+
+You may be prompted to set the "Root and postmaster mail recipient." Enter root, or another user who should receive mail subsystem notifications.
+
+For any other prompts, you can choose the default values.
+------------------------------------------------------------------------------------------------------------------------------------------------
+NOTE: If YOU need to reinstall with config prompts-->
+
+    Now that the package is installed, purge it. Run sudo apt-get purge postfix, then re-install and the config dialog should come up.
+    Run dpkg-reconfigure postfix
+------------------------------------------------------------------------------------------------------------------------------------------------
+
+Postfix configuration files reside in the directory /etc/postfix. Create or edit the password file:
+nano /etc/postfix/sasl_passwd
+Add the line:
+[smtp.gmail.com]:587    username@gmail.com:password
+
+example of SMS email- for sprint phones use 7345642537@messaging.sprintpcs.com
+
+Ref: 
+* if Needed check here-  Should be able to use postfix with gmail. 
+* https://kifarunix.com/configure-postfix-to-use-gmail-smtp-on-ubuntu-20-04/
+* https://www.howtoforge.com/tutorial/configure-postfix-to-use-gmail-as-a-mail-relay/
+* https://rtcamp.com/tutorials/linux/ubuntu-postfix-gmail-smtp/
+* 
+*/
+using namespace std;
+
+#define REQUIRED_VERSION 2,1,0
+#define DATA_TIMEOUT 1500
+#define IPADDRES "10.1.210.1"
+#define PROTOCOL "ab_eip"
+#define CPU "SLC"
+//Define Constant Variables For Database
+#define DBSERVER "10.1.6.61"
+#define USERNAME "dcollector"
+#define PASSWORD "71Kfst0"
+#define DB "DS721"
+#define TABLENAME "tblDS721"
+#define USAGE "Usage --> ./ProgramName Filename -h:help \n"
+
+#define SERIAL_PATH "protocol=ab_eip&gateway=10.1.210.1&plc=SLC&elem_size=84&elem_count=1&name=ST11:0"
+
+//Global Variables
+
+int cstate = 0;//Used to see if the trigger changes state before a resend
+
+int TestTag(int tag){ //Test if the Tag is Valid.
+	if(tag < 0) {
+        fprintf(stderr,"ERROR %s: Could not create tag!\n", plc_tag_decode_error(tag));
+        return 1;}
+    if(plc_tag_status(tag) != PLCTAG_STATUS_OK) {
+        fprintf(stderr,"Error setting up tag internal state.  Error %s\n", plc_tag_decode_error(plc_tag_status(tag)));
+        plc_tag_destroy(tag);
+        return 1;}
+	return 0;
+}
+
+void CheckVersion(){
+	/* check the library version. */
+    if(plc_tag_check_lib_version(REQUIRED_VERSION) != PLCTAG_STATUS_OK) {
+        fprintf(stderr, "Required compatible library version %d.%d.%d not available!", REQUIRED_VERSION);
+        exit(1);
+    }	
+}
+
+int32_t AddTag(const char* tagname, size_t name_length)
+{		
+	// PATH Example #define TAG_PATH "protocol=ab_eip&gateway=10.1.219.1&cpu=SLC&elem_size=2&elem_count=1&name=N7:0&debug=1"
+	char strtag[128];	 
+	sprintf(strtag,"protocol=%s&gateway=%s&cpu=%s&elem_size=2&elem_count=1&name=%s&debug=1",PROTOCOL,IPADDRES,CPU,tagname);
+	return plc_tag_create(strtag, DATA_TIMEOUT);
+}
+
+int32_t ReadTag(int32_t tag){
+	/* get the data */
+	int rc;
+    rc = plc_tag_read(tag, DATA_TIMEOUT);
+    if(rc != PLCTAG_STATUS_OK) {
+        fprintf(stderr,"ERROR: Unable to read the data! Got error code %d: %s \n",rc, plc_tag_decode_error(rc));
+        plc_tag_destroy(tag);
+        return 0;
+    }
+	return plc_tag_get_int16(tag,0);
+}
+
+void PLCWrite(int32_t tagname, int value){		
+	plc_tag_set_int16(tagname,0,value);
+	plc_tag_write(tagname, DATA_TIMEOUT);
+	plc_tag_destroy(tagname);  	
+}
+
+
+const char* gettime()
+{
+	time_t rawtime;
+	struct tm * timeinfo;
+	
+	time (&rawtime);
+	timeinfo = localtime(&rawtime);	
+	
+	return asctime(timeinfo);
+}
+
+int log(const char* message) {  
+  std::ofstream outfile;
+  outfile.open("pxDC.log", std::ios_base::app); // append instead of overwrite
+  outfile << message << ":" << gettime(); 
+  return 0;
+}
+ 
+char strserial[5];	
+
+char* ReadSerial(){
+	//Fucntion Adds tag instead of AddTag Function Due to Differnece in Element count and element size.		
+	int32_t tag = 0;
+    int elem_size = 0;
+    int elem_count = 0;
+    int tag_size = 0;
+    int rc;
+    int i; 
+         
+     /* open the tag handle to the PLC tag */
+    tag = plc_tag_create(SERIAL_PATH, DATA_TIMEOUT);
+     /* everything OK? */
+    if((rc = plc_tag_status(tag)) != PLCTAG_STATUS_OK) {
+        fprintf(stderr,"Error setting up tag internal state. Error %s\n", plc_tag_decode_error(rc));
+        plc_tag_destroy(tag);
+        return 0;
+    }
+
+    /* read the data from the PLC */
+    rc = plc_tag_read(tag, DATA_TIMEOUT);
+    if(rc != PLCTAG_STATUS_OK) {
+        fprintf(stderr,"ERROR: Unable to read the data! Got error code %d: %s\n",rc, plc_tag_decode_error(rc));
+        plc_tag_destroy(tag);
+        return 0;
+    }
+    
+    tag_size = plc_tag_get_size(tag);
+    elem_count = plc_tag_get_int_attribute(tag, "elem_count", 1);
+    elem_size = tag_size / elem_count;   
+
+    /* print out the data */
+    for(i=0; i < elem_count; i++) {
+        /* get the string character count, as a INT */
+        int str_size = plc_tag_get_int16(tag,(i*elem_size));
+        char str[elem_size];
+        int j = 0;
+
+        for(j=0; j<str_size; j++) {
+            int char_index = (i*elem_size) /* each string has a full buffer. */
+                           + 2             /* skip the string length INT */
+                           + (j ^ 0x01);   /* byteswap the index. */
+            str[j] = (char)plc_tag_get_uint8(tag,char_index);
+        }
+        str[j] = (char)0; /* null terminate since we are using a stack-based buffer! */
+	
+        //printf("string %d (%d chars) = '%s'\n",i, str_size, str);
+		sprintf(strserial,"%s",str);
+    }
+
+    /* we are done */
+    plc_tag_destroy(tag); 
+    
+    return strserial;	
+}
+
+float AddReadFloat(const char* tagname){
+	//"protocol=ab_eip&gateway=10.206.1.38&cpu=PLC5&elem_size=4&elem_count=5&name=F8:10&debug=4"
+	int32_t tag = 0;
+	int rc;
+	int i;
+	
+	char str[128];
+	sprintf(str,"protocol=ab_eip&gateway=10.1.210.1&plc=SLC&elem_size=4&elem_count=5&name=%s",tagname);
+	
+	tag = plc_tag_create(str, DATA_TIMEOUT);
+	if(tag <0){
+		fprintf(stderr,"Error %s: Could not create Tag!\n",plc_tag_decode_error(tag));
+		return 0;
+	} 	
+	if(plc_tag_status(tag) != PLCTAG_STATUS_OK){
+		fprintf(stderr,"Error setting up tag internal state. %s\n",plc_tag_decode_error(plc_tag_status(tag)));
+		plc_tag_destroy(tag);
+		return 0;
+	}
+	
+	rc = plc_tag_read(tag,DATA_TIMEOUT);
+	if(rc !=PLCTAG_STATUS_OK){
+		fprintf(stderr,"Error: unable to read the data! Got error code %d:  %s\n",rc,plc_tag_decode_error(rc));
+		plc_tag_destroy(tag);
+		return 0;		
+	}
+	
+	float var = plc_tag_get_float32(tag,0);
+	plc_tag_destroy(tag);
+		
+	return var;	
+}	
+
+int dbopen(char serial[5]){
+		
+	MYSQL *conn;	
+
+			conn = mysql_init(NULL);
+			if(!conn){printf("Mysql Init Failed");return 1;}
+			
+			conn = mysql_real_connect(conn,DBSERVER,USERNAME,PASSWORD,DB,0,NULL,0);
+			
+			if(conn){
+					//Create Tags Before Insert
+					int32_t PLC_N7_151 = AddTag("N7:151",4);TestTag(PLC_N7_151);          
+					int32_t PLC_N7_152 = AddTag("N7:152",4);TestTag(PLC_N7_152);
+					int32_t PLC_N7_153 = AddTag("N7:153",4);TestTag(PLC_N7_153);
+					int32_t PLC_N7_154 = AddTag("N7:154",4);TestTag(PLC_N7_154);
+					int32_t PLC_N7_155 = AddTag("N7:155",4);TestTag(PLC_N7_155);
+					int32_t PLC_N7_156 = AddTag("N7:156",4);TestTag(PLC_N7_156);
+					int32_t PLC_N7_157 = AddTag("N7:157",4);TestTag(PLC_N7_157);
+					int32_t PLC_N7_158 = AddTag("N7:158",4);TestTag(PLC_N7_158);
+					int32_t PLC_N7_159 = AddTag("N7:159",4);TestTag(PLC_N7_159);
+					int32_t PLC_N7_160 = AddTag("N7:160",4);TestTag(PLC_N7_160);
+					int32_t PLC_N7_161 = AddTag("N7:161",4);TestTag(PLC_N7_161);
+					int32_t PLC_N7_162 = AddTag("N7:162",4);TestTag(PLC_N7_162);
+					int32_t PLC_N7_163 = AddTag("N7:163",4);TestTag(PLC_N7_163);
+					int32_t PLC_N7_164 = AddTag("N7:164",4);TestTag(PLC_N7_164);
+					int32_t PLC_N7_165 = AddTag("N7:165",4);TestTag(PLC_N7_165);					
+					int32_t PLC_N7_166 = AddTag("N7:166",4);TestTag(PLC_N7_166);
+					int32_t PLC_N7_167 = AddTag("N7:167",4);TestTag(PLC_N7_167);
+					int32_t PLC_N7_168 = AddTag("N7:168",4);TestTag(PLC_N7_168);
+					int32_t PLC_N7_169 = AddTag("N7:169",4);TestTag(PLC_N7_169);
+					int32_t PLC_N7_170 = AddTag("N7:170",4);TestTag(PLC_N7_170);
+					int32_t PLC_N7_171 = AddTag("N7:171",4);TestTag(PLC_N7_171);
+					int32_t PLC_N7_172 = AddTag("N7:172",4);TestTag(PLC_N7_172);
+					int32_t PLC_N7_173 = AddTag("N7:173",4);TestTag(PLC_N7_173);
+					int32_t PLC_N7_174 = AddTag("N7:174",4);TestTag(PLC_N7_174);
+					int32_t PLC_N7_175 = AddTag("N7:175",4);TestTag(PLC_N7_175);
+					int32_t PLC_N7_176 = AddTag("N7:176",4);TestTag(PLC_N7_176);
+					int32_t PLC_N7_177 = AddTag("N7:177",4);TestTag(PLC_N7_177);
+					int32_t PLC_N7_178 = AddTag("N7:178",4);TestTag(PLC_N7_178);
+					int32_t PLC_N7_179 = AddTag("N7:179",4);TestTag(PLC_N7_179);
+					float F8_7 = AddReadFloat("F8:7");					
+					
+				printf("DB Connection Made\n");
+				char squery[2048];	
+				sprintf(squery, "INSERT INTO %s (ST11_0,F8_7,N7_151,N7_152,N7_153,N7_154,N7_155,N7_156,N7_157,N7_158,N7_159,N7_160,N7_161,N7_162,N7_163,N7_164,N7_165,N7_166,N7_167,N7_168,N7_169,N7_170,N7_171,N7_172,N7_173,N7_174,N7_175,N7_176,N7_177,N7_178,N7_179) VALUES(%s,%f,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d);",TABLENAME,serial,F8_7,ReadTag(PLC_N7_151),ReadTag(PLC_N7_152),ReadTag(PLC_N7_153),ReadTag(PLC_N7_154),ReadTag(PLC_N7_155),ReadTag(PLC_N7_156),ReadTag(PLC_N7_157),ReadTag(PLC_N7_158),ReadTag(PLC_N7_159),ReadTag(PLC_N7_160),ReadTag(PLC_N7_161),ReadTag(PLC_N7_162),ReadTag(PLC_N7_163),ReadTag(PLC_N7_164),ReadTag(PLC_N7_165),ReadTag(PLC_N7_166),ReadTag(PLC_N7_167),ReadTag(PLC_N7_168),ReadTag(PLC_N7_169),ReadTag(PLC_N7_170),ReadTag(PLC_N7_171),ReadTag(PLC_N7_172),ReadTag(PLC_N7_173),ReadTag(PLC_N7_174),ReadTag(PLC_N7_175),ReadTag(PLC_N7_176),ReadTag(PLC_N7_177),ReadTag(PLC_N7_178),ReadTag(PLC_N7_179));
+				printf("%s\n",squery);
+					//Clean Up Tags
+					plc_tag_destroy(PLC_N7_151);           
+					plc_tag_destroy(PLC_N7_152);
+					plc_tag_destroy(PLC_N7_153);
+					plc_tag_destroy(PLC_N7_154);
+					plc_tag_destroy(PLC_N7_155);
+					plc_tag_destroy(PLC_N7_156);
+					plc_tag_destroy(PLC_N7_157);
+					plc_tag_destroy(PLC_N7_158);
+					plc_tag_destroy(PLC_N7_159);
+					plc_tag_destroy(PLC_N7_160);
+					plc_tag_destroy(PLC_N7_161);
+					plc_tag_destroy(PLC_N7_162);
+					plc_tag_destroy(PLC_N7_163);
+					plc_tag_destroy(PLC_N7_164);
+					plc_tag_destroy(PLC_N7_165);
+					plc_tag_destroy(PLC_N7_166);
+					plc_tag_destroy(PLC_N7_167);
+					plc_tag_destroy(PLC_N7_168);
+					plc_tag_destroy(PLC_N7_169);
+					plc_tag_destroy(PLC_N7_170);
+					plc_tag_destroy(PLC_N7_171);
+					plc_tag_destroy(PLC_N7_172);
+					plc_tag_destroy(PLC_N7_173);
+					plc_tag_destroy(PLC_N7_174);
+					plc_tag_destroy(PLC_N7_175);
+					plc_tag_destroy(PLC_N7_176);
+					plc_tag_destroy(PLC_N7_177);
+					plc_tag_destroy(PLC_N7_178);
+					plc_tag_destroy(PLC_N7_179);
+					
+				// send SQL query 
+			/*	if (mysql_query(conn,squery))
+				 {
+					//TODO SEND TO LOCAL LOG AND SMS
+					//log("SQL INSERT Error %u: %s",mysql_errno(conn), mysql_error(conn));
+					printf("SQL INSERT Error %u: %s",mysql_errno(conn), mysql_error(conn));
+					return 1;
+				}else{					
+					int32_t PLC_result = AddTag("N7:180",4);
+					TestTag(PLC_result);
+					//Send Handshake 1=Insert Succeded 2= Insert Failed etc. 
+					//PLCWrite(PLC_result,1);	
+					//Clean up Tag Close database
+					plc_tag_destroy(PLC_result); 
+					mysql_close(conn);	
+					printf("Db Close Sent\n");									
+				}			
+			}else{				
+				log("DB Connection Failed -> Error %u %s", mysql_errno(conn), mysql_error(conn));
+				printf("DB Connection Failed -> Error %u %s\n", mysql_errno(conn), mysql_error(conn));
+				system("echo 'pxDC DS721 Database Connection Failed!' | mail 7345642537@messaging.sprintpcs.com &");
+				while (!conn)
+				{
+					mysql_close(conn);
+					conn = mysql_init(NULL);
+					conn = mysql_real_connect(conn,DBSERVER,USERNAME,PASSWORD,DB,0,NULL,0);
+					if(conn){
+					mysql_close(conn);
+					dbopen(ReadSerial());}
+				}
+			}
+	*/
+			return 0;	
+}
+	
+//--------------------------------------------------------------------------------------------------------------------------------
+
+int main(int argc,char * argv[])
+{					
+	CheckVersion();	
+	log("Program Started");    	
+	int trigger = 0;
+	int triggerstatus = 0;
+	int plc_messagesent = 0;	
+				
+	while(1){	
+	
+		int32_t PLC_trigger = AddTag("N7:150",4);TestTag(PLC_trigger);		
+		trigger = ReadTag(PLC_trigger);
+		printf("Trigger %d \n",trigger);
+		if (trigger==0){cstate=0;};
+		triggerstatus = plc_tag_status(PLC_trigger);
+		//printf("Main Loop Trigger pxDC: %d Status: %d >Date/Time: %s",trigger,triggerstatus, gettime());   
+				 
+		 if(plc_tag_status(PLC_trigger) != PLCTAG_STATUS_OK) {
+				if (plc_messagesent==0){system("echo 'pxDC DS721 10.1.210.1 PLC DOWN' | mail 7345642537@messaging.sprintpcs.com &"); plc_messagesent=1;log("PLC LOST COMMUNICATION");}
+					 while (triggerstatus != 0){			
+						plc_tag_destroy(PLC_trigger);
+						int32_t PLC_trigger = AddTag("N7:1",4);
+						trigger = ReadTag(PLC_trigger);
+						triggerstatus = plc_tag_status(PLC_trigger);
+						cstate = 2;
+						printf("Sub Loop Trigger: %d Status: %d\n",trigger,triggerstatus);
+							if (triggerstatus==0){						
+								system("echo 'pxDC DS721 10.1.210.1 PLC Back UP!' | mail 7345642537@messaging.sprintpcs.com &"); 
+								plc_messagesent=0;
+								log("PLC COMMUNICTAION BACK UP");
+							}
+						sleep(2);  
+					}
+		 }else{
+				if(trigger == 1 && (cstate == 0 || cstate == 2)){
+					cstate = 1;	
+					printf("Trigger is High - Data is Being Sent\n");
+					dbopen(ReadSerial());
+					}
+		}				
+		plc_tag_destroy(PLC_trigger);				
+		sleep(.75);
+	} 
+    return 0;
+}
+
+/* Example of a complete sql INSERT Statement
+INSERT INTO tblDS721 (ST11_0,F8_7,N7_151,N7_152,N7_153,N7_154,N7_155,N7_156,N7_157,N7_158,N7_159,N7_160,N7_161,N7_162,N7_163,N7_164,N7_165,N7_166,N7_167,N7_168,N7_169,N7_170,N7_171,N7_172,N7_173,N7_174,N7_175,N7_176,N7_177,N7_178,N7_179) 
+ VALUES(J19553,28008,692,1,1,1,4,1,12,1,0,1,1,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0);
+*/

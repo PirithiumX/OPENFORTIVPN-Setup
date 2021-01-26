@@ -1,0 +1,40 @@
+OPENFOTRIVPN = opensource fortigate client VPN for Linux
+------------------------------------------------------------------------------------------------------
+Debian Systems Like Ubuntu 20.04 have this package in the default repos.
+------------------------------------------------------------------------------------------------------
+$: apt install -y openfortivpn
+------------------------------------------------------------------------------------------------------
+touch openfortivpn.conf
+------------------------------------------------------------------------------------------------------
+Set Permissions to Write to the file. Please note this file will contain plain text password so you 
+will need to secure it from non-root users from reading.
+
+Example $: chmod go-rwx openfortivpn.conf
+------------------------------------------------------------------------------------------------------
+Edit the openfortivpn.conf:
+------------------------------------------------------------------------------------------------------
+host=your.vpnserver.com
+port=4443
+username=jdoe
+password=passwd1234
+trusted-cert=4631274632789564019-37123890471289078978748936747863ghjhgr7823t4re2gh2871 <-Example 
+Note this for later we need to get this number after the first time we try to connect. 
+------------------------------------------------------------------------------------------------------
+Connect for the First Time:
+$: sudo openfortvpn -c openfortivpn.conf
+You will get errors: search for the key copy it and paste it into the trusted-cert of the openfortivpn.conf file. 
+------------------------------------------------------------------------------------------------------
+try to reconnect
+$: sudo openfortvpn -c openfortivpn.conf
+INFO: Connected to gateway.
+INFO: Authenticated.
+etc etc 
+INFO: Tunnel is up and running.
+------------------------------------------------------------------------------------------------------
+You can also coinnect with the command line without using a config file
+sudo openfortivpn -u <USER> -p <PASSWORD> --trusted-cert <CERTIFICATE><SERVER>:<PORT>
+MORE INFO: github.com/adrienverge/openfortivpn
+!* manikier.com/1/openfortivpn  *! Good switch information
+------------------------------------------------------------------------------------------------------
+
+
